@@ -6,7 +6,8 @@ CXXFLAGS = -Wall -Wextra -Wpedantic -O3
 INCLUDEDIR ?= /usr/local/include
 
 # Header-only lib filename
-HEADER = ThreadPool
+HEADER_SRC = ThreadPool.h
+HEADER_DEST = ThreadPool
 
 .PHONY: all clean install uninstall
 
@@ -15,10 +16,10 @@ all:
 
 install:
 	install -d $(INCLUDEDIR)
-	install -m 644 $(HEADER) $(INCLUDEDIR)
+	install -m 644 $(HEADER_SRC) $(INCLUDEDIR)/$(HEADER_DEST)
 
 uninstall:
-	rm -f $(INCLUDEDIR)/$(HEADER)
+	rm -f $(INCLUDEDIR)/$(HEADER_DEST)
 
 clean:
 	@echo "Nothing to clean for templated library"
