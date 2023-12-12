@@ -1,14 +1,16 @@
 #ifndef __THREADPOOL_H_
 #define __THREADPOOL_H_
 
+#include <iostream>
 #include <vector>
 #include <queue>
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <memory>
 
 class ThreadPool {
-private:
+    private:
     std::vector<std::thread> workers;
     std::queue<std::function<void()>> tasks;
 
@@ -16,60 +18,146 @@ private:
     std::condition_variable condition;
     bool stop;
 
-public:
-    ThreadPool(size_t threads) : stop(false) {
-        for(size_t i = 0; i < threads; ++i) {
-            workers.emplace_back([this] {
-                while(true) {
-                    std::function<void()> task;
-                    {
-                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+    public:
+    ThreadPool(const size_t threads) noexcept;  // Constructor
+    ~ThreadPool() noexcept;                     // Destructor
+    void resize(const size_t threads) noexcept; // Resizes the thread pool
+    void clear(void) noexcept;                  // Clears the queued tasks that have NOT been started yet
 
-                        // Wait until there is a task in the queue or the thread pool is stopped (via destructor)
-                        this->condition.wait(lock, [this]{ return this->stop || !this->tasks.empty(); });
-                        if(this->stop && this->tasks.empty())
-                            return;
+    // Delete these functions as this class is NOT safe to be copied
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
 
-                        // Pop the next task from the queue.
-                        task = std::move(this->tasks.front());
-                        this->tasks.pop();
-                    }
-                    task();
-                }
-            });
+    // Task enqueueing function, returns an std::future
+    template <typename F, typename... Args>
+    auto enqueue(F&& f, Args&&... args) -> std::future<decltype(f(args...))> {
+        if (!workers.size()) {
+            throw std::runtime_error("enqueue called on empty ThreadPool");
         }
-    }
 
-    template<typename F, typename... Args> auto enqueue(F&& f, Args&&... args) -> std::future<decltype(f(args...))> {
         using return_type = decltype(f(args...));
 
-        auto task = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
-        );
-        
+        std::shared_ptr<std::packaged_task<return_type()>> task = std::make_shared<std::packaged_task<return_type()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
+
         std::future<return_type> res = task->get_future();
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
 
-            if(stop)
-                throw std::runtime_error("enqueue on stopped ThreadPool");
+            if (stop)
+                throw std::runtime_error("enqueue called on stopped ThreadPool");
 
-            tasks.emplace([task](){ (*task)(); });
+            tasks.emplace([task]() {
+                (*task)();
+            });
         }
+
         condition.notify_one();
         return res;
     }
 
-    ~ThreadPool() {
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            stop = true;
+}; // class ThreadPool
+
+void ThreadPool::clear(void) {
+    std::queue<std::function<void()>> swapQ;
+    tasks.swap(swapQ); // Swap with the empty queue
+}
+
+ThreadPool::ThreadPool(const size_t threads) : stop(false) {
+    workers.resize(threads); // Reserve for below loop
+    for (auto& thread : workers) {
+        thread = std::thread([this] {
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(queue_mutex);
+
+                    // Wait until there is a task in the queue or the thread pool is stopped (via destructor)
+                    condition.wait(lock, [this] { return stop || !tasks.empty(); });
+                    if (stop && tasks.empty()) return;
+
+                    // Pop the next task from the queue.
+                    task = std::move(tasks.front());
+                    tasks.pop();
+                } // Let std::unique_lock destructor be called, releasing lock
+                try {
+                    task();
+                } catch (const std::exception& e) {
+                    std::cerr << "Caught exception in thread pool task: " << e.what() << std::endl; // endl to flush output buffer
+                    // TODO: Add a way to notify the main thread (or any passed callback function) when exceptions in the threads happen
+                } catch (...) {
+                    // In case a non-std exception is thrown
+                    std::cerr << "Caught non-standard exception in thread pool task" << std::endl;
+                }
+            }
+        });
+    }
+}
+
+ThreadPool::~ThreadPool() {
+    stop = true;
+
+    condition.notify_all();
+    for (auto& thread : workers) {
+        if (thread.joinable()) { // Check shouldn't ever be false, but call just in case to guard against UB
+            thread.join();
         }
-        condition.notify_all();
-        for(std::thread &worker: workers)
-            worker.join();
+    }
+}
+
+void ThreadPool::resize(const size_t threads) {
+    // Lock the queue_mutex for the entirety of this resize function.
+    std::unique_lock<std::mutex> lock(queue_mutex);
+    size_t sz = workers.size();
+
+    if (threads < sz) {
+        // Need to shrink
+        stop = true;
+        for (size_t i = threads; i < sz; ++i) {
+            condition.notify_one(); // Notify the number we need to lose with stop=true, then set stop back to false and join the to-be-removed threads
+        }
+
+        stop = false;
+
+        for (auto it = std::next(workers.begin(), threads); it != workers.end(); ++it) {
+            auto& thread = *it;
+            if (thread.joinable()) { // Guard against UB
+                thread.join();       // Join the threads to be removed
+            }
+        }
+
+        workers.erase(workers.begin() + threads, workers.end()); // And finally erase them
+        return;
     }
 
-}; // class ThreadPool
+    if (threads > sz) {
+        // Need to grow
+        workers.resize(threads);
+        for (auto it = std::next(workers.begin(), sz); it != workers.end(); ++it) {
+            auto& thread = *it;
+            thread = std::thread([this] {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex);
+
+                        condition.wait(lock, [this] { return stop || !tasks.empty(); });
+                        if (stop && tasks.empty()) return;
+
+                        task = std::move(tasks.front());
+                        tasks.pop();
+                    }
+
+                    try {
+                        task();
+                    } catch (const std::exception& e) {
+                        std::cerr << "Caught exception in thread pool task: " << e.what() << std::endl;
+                    } catch (...) {
+                        std::cerr << "Caught non-standard exception in thread pool task" << std::endl;
+                    }
+                }
+            });
+        }
+    }
+}
 
 #endif //__THREADPOOL_H_
