@@ -19,20 +19,18 @@ An example usage is below. Please make sure to run your compilation command with
 #include <ThreadPool> // Include my library
 
 int main(void){
-    using uint = unsigned int;
-
     uint nproc = std::thread::hardware_concurrency();
 
     ThreadPool p(nproc); // Initialize the thread pool with nproc threads
     std::vector<std::future<std::string>> futures; futures.resize(nproc); // Create a vector of futures
 
-    char c = 'A';
+    char sc = 'A';
     for(auto& f : futures){
         // Enqueue the lambda task with the ThreadPool, storing the future so we can get our result later (and to prevent blocking).
         f = p.enqueue([](const char c) {
             sleep(2); // Sleep for 2 seconds. The *entire program* should only sleep for 2-3 seconds, due to the multithreading.
             return std::string(20, c);
-        }, c++);
+        }, sc++);
     }
 
     // Print out our results.
