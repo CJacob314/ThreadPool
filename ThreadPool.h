@@ -57,12 +57,12 @@ class ThreadPool {
 
 }; // class ThreadPool
 
-void ThreadPool::clear(void) {
+void ThreadPool::clear(void) noexcept {
     std::queue<std::function<void()>> swapQ;
     tasks.swap(swapQ); // Swap with the empty queue
 }
 
-ThreadPool::ThreadPool(const size_t threads) : stop(false) {
+ThreadPool::ThreadPool(const size_t threads) noexcept : stop(false) {
     workers.resize(threads); // Reserve for below loop
     for (auto& thread : workers) {
         thread = std::thread([this] {
@@ -93,7 +93,7 @@ ThreadPool::ThreadPool(const size_t threads) : stop(false) {
     }
 }
 
-ThreadPool::~ThreadPool() {
+ThreadPool::~ThreadPool() noexcept {
     stop = true;
 
     condition.notify_all();
@@ -104,7 +104,7 @@ ThreadPool::~ThreadPool() {
     }
 }
 
-void ThreadPool::resize(const size_t threads) {
+void ThreadPool::resize(const size_t threads) noexcept {
     // Lock the queue_mutex for the entirety of this resize function.
     std::unique_lock<std::mutex> lock(queue_mutex);
     size_t sz = workers.size();
@@ -138,9 +138,9 @@ void ThreadPool::resize(const size_t threads) {
                 while (true) {
                     std::function<void()> task;
                     {
-                        std::unique_lock<std::mutex> lock(queue_mutex);
+                        std::unique_lock<std::mutex> queueLock(queue_mutex);
 
-                        condition.wait(lock, [this] { return stop || !tasks.empty(); });
+                        condition.wait(queueLock, [this] { return stop || !tasks.empty(); });
                         if (stop && tasks.empty()) return;
 
                         task = std::move(tasks.front());
