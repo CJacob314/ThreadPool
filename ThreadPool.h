@@ -57,12 +57,12 @@ class ThreadPool {
 
 }; // class ThreadPool
 
-void ThreadPool::clear(void) noexcept {
+inline void ThreadPool::clear(void) noexcept {
     std::queue<std::function<void()>> swapQ;
     tasks.swap(swapQ); // Swap with the empty queue
 }
 
-ThreadPool::ThreadPool(const size_t threads) noexcept : stop(false) {
+inline ThreadPool::ThreadPool(const size_t threads) noexcept : stop(false) {
     workers.resize(threads); // Reserve for below loop
     for (auto& thread : workers) {
         thread = std::thread([this] {
@@ -93,7 +93,7 @@ ThreadPool::ThreadPool(const size_t threads) noexcept : stop(false) {
     }
 }
 
-ThreadPool::~ThreadPool() noexcept {
+inline ThreadPool::~ThreadPool() noexcept {
     stop = true;
 
     condition.notify_all();
@@ -104,7 +104,7 @@ ThreadPool::~ThreadPool() noexcept {
     }
 }
 
-void ThreadPool::resize(const size_t threads) noexcept {
+inline void ThreadPool::resize(const size_t threads) noexcept {
     // Lock the queue_mutex for the entirety of this resize function.
     std::unique_lock<std::mutex> lock(queue_mutex);
     size_t sz = workers.size();
